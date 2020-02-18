@@ -2,7 +2,8 @@ import socket
 import threading
 import time
 import cv2
-from stats import Stats
+import numpy as np
+from easytello.stats import Stats
 
 class Tello:
     def __init__(self, tello_ip: str='192.168.10.1', debug: bool=True):
@@ -28,7 +29,8 @@ class Tello:
         self.MAX_TIME_OUT = 15.0
         self.debug = debug
         # Setting Tello to command mode
-        self.command()
+        #self.command()
+        self.streamon()
 
     def send_command(self, command: str, query: bool =False):
         # New log entry created for the outbound command
@@ -64,15 +66,69 @@ class Tello:
     def _video_thread(self):
         # Creating stream capture object
         cap = cv2.VideoCapture('udp://'+self.tello_ip+':11111')
+
+        # # 人臉辨識
+        # # 載入分類器
+        # face_cascade = cv2.CascadeClassifier('C:\\Users\\user\\AppData\\Local\\Programs\\Python\\Python38\\Lib\\site-packages\\cv2\\data\\haarcascade_frontalface_default.xml')
+        # # 將圖片轉為灰階
+        # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        #
+        # faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+        # for (x, y, w, h) in faces:
+        #     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)  # 畫出外框
+
+        # 移動偵測
+        ret, frame = cap.read()
+        avg = cv2.blur(frame, (4, 4))
+        avg_float = np.float32(avg)
+
         # Runs while 'stream_state' is True
         while self.stream_state:
             ret, frame = cap.read()
-            cv2.imshow('DJI Tello', frame)
+
+            # 模糊處理
+            blur = cv2.blur(frame, (4, 4))
+
+            # 計算目前影格與平均影像的差異值
+            difference = cv2.absdiff(avg, blur)
+
+            # 轉成灰階
+            gray = cv2.cvtColor(difference, cv2.COLOR_BGR2GRAY)
+
+            # 篩選出變動程度大於門檻值的區域
+            ret, thresh = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
+
+            # 使用型態轉換函數去除雜訊
+            kernel = np.ones((5, 5), np.uint8)
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=2)
+            thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+            # 產生等高線
+            cntImg, cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            for c in cntImg:
+                if cv2.contourArea(c) < 2500:
+                    continue
+
+                # 計算等高線外框範圍
+                (x, y, w, h) = cv2.boundingRect(c)
+
+                # 畫出外框
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+            # 劃出等高線
+            #cv2.drawContours(frame, cntImg, -1, (0, 255, 255), 2)
+
+            cv2.namedWindow('DJI Tello', cv2.WINDOW_NORMAL)                         #正常視窗大小
+            cv2.imshow('DJI Tello', frame)                                          #秀出圖片
 
             # Video Stream is closed if escape key is pressed
-            k = cv2.waitKey(1) & 0xFF
-            if k == 27:
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
+
+            cv2.accumulateWeighted(blur, avg_float, 0.01)
+            avg = cv2.convertScaleAbs(avg_float)
+
         cap.release()
         cv2.destroyAllWindows()
     
@@ -196,4 +252,7 @@ class Tello:
     def get_wifi(self):
         self.send_command('wifi?', True)
         return self.log[-1].get_response()
+
+    # def get_status(self):
+    #     return Stats(command='').print_stats()
     
